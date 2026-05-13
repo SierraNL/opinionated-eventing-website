@@ -1,0 +1,176 @@
+---
+sidebar_position: 7
+title: Local Development
+---
+
+# Local Development
+
+OpinionatedEventing is designed to run locally without any cloud accounts. The `OpinionatedEventing.Aspire` package provides Aspire AppHost extensions that spin up RabbitMQ or the Azure Service Bus emulator as Docker containers, with zero configuration required.
+
+## Prerequisites
+
+- **.NET 10 SDK** — required for the Aspire AppHost. Service projects can target .NET 8 or later.
+- **A container runtime** — Docker Desktop, Podman, or Rancher Desktop.
+
+> **Note:** From Aspire 9 onwards the separate `dotnet workload install aspire` step is no longer needed. Aspire is now a set of NuGet packages; there is no workload to install. See [aspire.dev](https://aspire.dev/get-started/prerequisites/) for the current prerequisites.
+
+## Project structure
+
+An Aspire solution typically has at least two projects:
+
+```
+YourSolution.AppHost/    ← Aspire host (orchestrates resources)
+YourSolution.ApiService/ ← Your application service(s)
+```
+
+Add the Aspire package to the AppHost:
+
+```
+dotnet add package OpinionatedEventing.Aspire
+```
+
+## RabbitMQ
+
+### AppHost setup
+
+```csharp
+// AppHost/Program.cs
+using Aspire.Hosting;
+
+var builder = DistributedApplication.CreateBuilder(args);
+
+var rabbit = builder.AddRabbitMqMessaging("rabbitmq");
+
+var api = builder.AddProject<Projects.YourSolution_ApiService>("api")
+    .WithReference(rabbit);
+
+builder.Build().Run();
+```
+
+`AddRabbitMqMessaging` starts a RabbitMQ container with the management plugin enabled. It injects a `ConnectionStrings__rabbitmq` environment variable into any project that references it.
+
+### Service setup
+
+```csharp
+services.AddRabbitMQTransport(options =>
+{
+    options.ServiceName = "order-service";
+    options.AutoDeclareTopology = true; // declare exchanges and queues at startup
+});
+```
+
+## Azure Service Bus emulator
+
+### AppHost setup
+
+```csharp
+// AppHost/Program.cs
+using Aspire.Hosting;
+
+var builder = DistributedApplication.CreateBuilder(args);
+
+var asb = builder.AddAzureServiceBusEmulator("servicebus");
+
+var api = builder.AddProject<Projects.YourSolution_ApiService>("api")
+    .WithReference(asb);
+
+builder.Build().Run();
+```
+
+### Service setup
+
+```csharp
+services.AddAzureServiceBusTransport(options =>
+{
+    options.ServiceName = "order-service";
+    options.AutoCreateResources = true; // create topics and queues at startup
+});
+```
+
+## Switching transports
+
+Switching between RabbitMQ and Azure Service Bus requires only a DI change. Handler, aggregate, and saga code is identical for both transports.
+
+```csharp
+if (builder.Configuration["Transport"] == "AzureServiceBus")
+{
+    services.AddAzureServiceBusTransport(options =>
+    {
+        options.ServiceName = "order-service";
+        options.AutoCreateResources = true;
+    });
+}
+else
+{
+    services.AddRabbitMQTransport(options =>
+    {
+        options.ServiceName = "order-service";
+        options.AutoDeclareTopology = true;
+    });
+}
+```
+
+In `appsettings.Development.json`:
+
+```json
+{
+  "Transport": "RabbitMQ"
+}
+```
+
+## Running locally
+
+To try the included sample (four services, RabbitMQ, PostgreSQL — zero config):
+
+```bash
+# From the repository root
+aspire run
+
+# Or without the Aspire CLI
+dotnet run --project samples/Samples.AppHost
+```
+
+For your own solution:
+
+```bash
+cd src/YourSolution.AppHost
+dotnet run
+```
+
+The Aspire dashboard opens automatically at `http://localhost:15888`. It shows:
+
+- All running services and their health status
+- Console output per service
+- Distributed traces (if OTel is configured)
+- Resource connection strings
+
+## Health checks
+
+Both transport packages expose health checks via the `OpinionatedEventing.Aspire` extensions:
+
+```csharp
+services.AddHealthChecks()
+    .AddOpinionatedEventingHealthChecks(options =>
+    {
+        options.OutboxBacklogThreshold = 100;
+        options.SagaTimeoutBacklogThreshold = 10;
+    });
+
+app.MapHealthChecks("/health");
+```
+
+| Health check | Tags | Condition |
+|---|---|---|
+| Broker connectivity | `live`, `broker` | Unhealthy if broker is unreachable |
+| Outbox backlog | `ready`, `outbox` | Degraded above `OutboxBacklogThreshold` |
+| Saga timeout backlog | `ready`, `saga` | Degraded above `SagaTimeoutBacklogThreshold` |
+
+## RabbitMQ management UI
+
+When using `AddRabbitMqMessaging`, the management plugin is enabled. Access the RabbitMQ management UI at:
+
+```
+http://localhost:15672
+```
+
+Default credentials: `guest` / `guest`
