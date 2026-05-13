@@ -1,41 +1,30 @@
-# Website
+# opinionated-eventing-website
 
-This website is built using [Docusaurus](https://docusaurus.io/), a modern static website generator.
+Source for [opinionated-eventing.com](https://opinionated-eventing.com) — the documentation and project website for [OpinionatedEventing](https://github.com/SierraNL/OpinionatedEventing), an opinionated event-driven messaging library for .NET.
 
-## Installation
+Built with [Docusaurus](https://docusaurus.io/). Deployed to GitHub Pages on every push to `main`.
 
-```bash
-yarn
-```
-
-## Local Development
+## Local development
 
 ```bash
-yarn start
+npm install
+npm start
 ```
 
-This command starts a local development server and opens up a browser window. Most changes are reflected live without having to restart the server.
+Opens a live-reloading dev server at `http://localhost:3000`.
 
 ## Build
 
 ```bash
-yarn build
+npm run build
 ```
 
-This command generates static content into the `build` directory and can be served using any static contents hosting service.
+Generates static output into `build/`. Serve it locally with `npm run serve`.
 
 ## Deployment
 
-Using SSH:
+Pushing to `main` triggers the [GitHub Actions workflow](.github/workflows/deploy.yml) which builds and deploys to GitHub Pages automatically.
 
-```bash
-USE_SSH=true yarn deploy
-```
+## Updating the docs
 
-Not using SSH:
-
-```bash
-GIT_USER=<Your GitHub username> yarn deploy
-```
-
-If you are using GitHub pages for hosting, this command is a convenient way to build the website and push to the `gh-pages` branch.
+The docs in [`docs/`](docs/) mirror the content from the [main repo's `/docs` folder](https://github.com/SierraNL/OpinionatedEventing/tree/main/docs). To update a doc, edit the corresponding file here and open a PR.
