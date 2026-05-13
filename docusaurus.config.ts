@@ -55,7 +55,7 @@ const config: Config = {
       title: 'OpinionatedEventing',
       logo: {
         alt: 'OpinionatedEventing Logo',
-        src: 'img/logo.svg',
+        src: 'img/logo.png',
       },
       items: [
         {
