@@ -87,19 +87,52 @@ services.AddDbContext<AppDbContext>((sp, options) =>
 services.AddOpinionatedEventingEntityFramework<AppDbContext>();
 ```
 
+The `DomainEventInterceptor` is registered as scoped by `AddOpinionatedEventingEntityFramework`.
+
 ## Correlation propagation
 
 Every domain event written to the outbox carries:
 
-- `CorrelationId` — taken from `IMessagingContext.CorrelationId` in the current scope
+- `CorrelationId` — taken from `IMessagingContext.CorrelationId` in the current scope, which is the correlation ID of the inbound message being processed (or a new root ID if initiated from an HTTP request)
 - `CausationId` — taken from `IMessagingContext.CausationId`, linking this event to the message that triggered the current handler
+
+This means the full causal chain is captured in the outbox rows and propagated through the broker to consumers.
+
+## AggregateRoot API
+
+```csharp
+public abstract class AggregateRoot : IAggregateRoot
+{
+    // Queued domain events, cleared after each SaveChanges.
+    public IReadOnlyList<IEvent> DomainEvents { get; }
+
+    // Call inside domain methods to queue a domain event.
+    protected void RaiseDomainEvent(IEvent domainEvent);
+}
+```
+
+`ClearDomainEvents()` is internal — only the framework calls it. Application code should never clear the events list.
+
+## Using IAggregateRoot without the base class
+
+If your aggregate already extends another base class, implement `IAggregateRoot` directly:
+
+```csharp
+public interface IAggregateRoot
+{
+    IReadOnlyList<IEvent> DomainEvents { get; }
+    internal void ClearDomainEvents();
+}
+```
+
+Because `ClearDomainEvents` is `internal`, you will need to provide your own implementation of the domain events list. Consider using the `AggregateRoot` base class whenever possible.
 
 ## Multiple aggregates in one transaction
 
 The interceptor scans **all** tracked aggregates. If a single `SaveChanges` modifies multiple aggregates, all their domain events are harvested and written to the outbox atomically:
 
 ```csharp
-db.Orders.Add(order);    // raises OrderPlaced
+db.Orders.Add(order);   // raises OrderPlaced
 db.Invoices.Add(invoice); // raises InvoiceCreated
 await db.SaveChangesAsync(ct);
 // Both OutboxMessage rows committed with both entity rows.

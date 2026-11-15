@@ -108,11 +108,15 @@ The `OutboxDispatcherWorker` retries failed dispatches up to `OutboxOptions.MaxA
 | 4th retry | 16 s |
 | 5th retry+ | capped at `MaxRetryDelay` (default 5 min) |
 
+This prevents a single poisonous message from hammering the broker at the poll rate. `GetPendingAsync` filters `WHERE NextAttemptAt IS NULL OR NextAttemptAt <= now` so delayed messages are invisible to other workers until their backoff window has elapsed.
+
 After `MaxAttempts` failures the row is marked as dead-lettered (`FailedAt` is set). Dead-lettered rows are never retried automatically. Use `IOutboxMonitor.GetDeadLetterCountAsync()` to detect accumulation and alert on it.
 
 ## Retention and cleanup
 
 By default, processed rows are deleted after 7 days and dead-lettered rows are kept indefinitely. The `OutboxCleanupWorker` hosted service runs hourly and enforces these limits.
+
+**Why keep dead-letters indefinitely by default?** Dead-letters represent messages that could not be delivered after all attempts. They are rare and operationally significant — you typically want to inspect them before removing.
 
 Configure retention in `OutboxOptions`:
 
@@ -124,6 +128,8 @@ services.AddOpinionatedEventing(options =>
     options.Outbox.CleanupInterval = TimeSpan.FromHours(1);     // how often the cleanup worker runs
 });
 ```
+
+The cleanup worker is safe to run across multiple application instances. The delete predicates (`ProcessedAt < cutoff` / `FailedAt < cutoff`) are mutually exclusive with the dispatcher's pending-message predicate (`ProcessedAt IS NULL AND FailedAt IS NULL`), so cleanup can never remove a row that the dispatcher is currently processing. Concurrent cleanup runs on the same rows are idempotent.
 
 ## Configuring the dispatcher
 
@@ -140,6 +146,8 @@ services.AddOpinionatedEventing(options =>
     options.Outbox.CleanupInterval = TimeSpan.FromHours(1);     // cleanup sweep interval
 });
 ```
+
+Increase `ConcurrentWorkers` to raise throughput. Each worker polls and dispatches independently. The `IOutboxStore` implementation is responsible for ensuring that concurrent workers do not pick up the same message. The EF Core store uses a claim-column approach: candidate rows are identified with a `SELECT`, then stamped with a unique `LockedBy` token via an `UPDATE` that re-checks the lock predicate. Only rows successfully stamped with that call's token are returned, so concurrent workers cannot receive the same message even without database-level row locking.
 
 ## IOutboxStore
 
@@ -167,6 +175,16 @@ public class OutboxHealthEndpoint(IOutboxMonitor monitor)
 }
 ```
 
+Or use the built-in health check extension (from `OpinionatedEventing.Aspire`):
+
+```csharp
+services.AddHealthChecks()
+    .AddOpinionatedEventingHealthChecks(options =>
+    {
+        options.OutboxBacklogThreshold = 100; // Degraded above this
+    });
+```
+
 ## Delivery guarantees and consumer idempotency
 
 The outbox guarantees **at-least-once delivery** — under certain failure conditions the same message may be delivered more than once. Consumers are responsible for handling duplicates. See [Idempotency](idempotency.md) for strategies and code examples.
@@ -176,7 +194,9 @@ The outbox guarantees **at-least-once delivery** — under certain failure condi
 There are two ways to create the outbox table — **pick one per project and do not mix them**:
 
 - **Model-based migrations** — call `modelBuilder.ApplyOutboxConfiguration()` in `OnModelCreating` and let EF generate the `CREATE TABLE` migration automatically via `dotnet ef migrations add`.
-- **Migration helper methods** — call `migrationBuilder.CreateOutboxTable()` inside a hand-authored migration and do **not** call `ApplyOutboxConfiguration()`.
+- **Migration helper methods** — call `migrationBuilder.CreateOutboxTable()` inside a hand-authored migration and do **not** call `ApplyOutboxConfiguration()`. If you do both, EF will generate a duplicate `CreateTable` for the same table the next time you run `dotnet ef migrations add`.
+
+Rather than writing migration SQL by hand, use the provided extension methods:
 
 ```csharp
 // In your migration's Up() method:
@@ -188,7 +208,7 @@ migrationBuilder.DropOutboxTable();
 migrationBuilder.DropSagaStateTable();
 ```
 
-If you are upgrading an existing deployment, add a new migration that applies only the incremental schema change:
+If you are upgrading an existing deployment (the table already exists), add a new migration that applies only the incremental schema change:
 
 ```csharp
 // In the Up() method of a new migration:
@@ -197,3 +217,5 @@ migrationBuilder.AddOutboxRetentionColumns();
 // In the Down() method:
 migrationBuilder.DropOutboxRetentionColumns();
 ```
+
+This adds the `NextAttemptAt` column and the `IX_outbox_messages_cleanup_failed` index. New deployments that call `CreateOutboxTable` already include these elements.

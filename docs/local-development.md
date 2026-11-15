@@ -9,7 +9,7 @@ OpinionatedEventing is designed to run locally without any cloud accounts. The `
 
 ## Prerequisites
 
-- **.NET 10 SDK** — required for the Aspire AppHost. Service projects can target .NET 8 or later.
+- **.NET 11 SDK** — required to build the repository and the Aspire AppHost. Service projects can target .NET 10 or later.
 - **A container runtime** — Docker Desktop, Podman, or Rancher Desktop.
 
 > **Note:** From Aspire 9 onwards the separate `dotnet workload install aspire` step is no longer needed. Aspire is now a set of NuGet packages; there is no workload to install. See [aspire.dev](https://aspire.dev/get-started/prerequisites/) for the current prerequisites.
@@ -51,6 +51,8 @@ builder.Build().Run();
 
 ### Service setup
 
+In your service project, use `AddRabbitMQTransport` and leave `ConnectionString` unset — the transport auto-discovers it from `IConfiguration["ConnectionStrings:rabbitmq"]`:
+
 ```csharp
 services.AddRabbitMQTransport(options =>
 {
@@ -77,6 +79,8 @@ var api = builder.AddProject<Projects.YourSolution_ApiService>("api")
 builder.Build().Run();
 ```
 
+`AddAzureServiceBusEmulator` starts the Azure Service Bus emulator container and injects its connection string.
+
 ### Service setup
 
 ```csharp
@@ -87,9 +91,13 @@ services.AddAzureServiceBusTransport(options =>
 });
 ```
 
+The transport reads the injected connection string automatically — no manual configuration needed.
+
 ## Switching transports
 
 Switching between RabbitMQ and Azure Service Bus requires only a DI change. Handler, aggregate, and saga code is identical for both transports.
+
+A common pattern is to use `IConfiguration` or environment variables to select the transport:
 
 ```csharp
 if (builder.Configuration["Transport"] == "AzureServiceBus")
@@ -130,6 +138,8 @@ aspire run
 dotnet run --project samples/Samples.AppHost
 ```
 
+See [samples/README.md](https://github.com/SierraNL/OpinionatedEventing/blob/main/samples/README.md) for the full walkthrough and how to place a test order.
+
 For your own solution:
 
 ```bash
@@ -159,6 +169,8 @@ services.AddHealthChecks()
 app.MapHealthChecks("/health");
 ```
 
+The Aspire dashboard polls `/health` and reflects the status in the resources view.
+
 | Health check | Tags | Condition |
 |---|---|---|
 | Broker connectivity | `live`, `broker` | Unhealthy if broker is unreachable |
@@ -174,3 +186,5 @@ http://localhost:15672
 ```
 
 Default credentials: `guest` / `guest`
+
+Here you can inspect exchanges, queues, bindings, and message rates in real time.
