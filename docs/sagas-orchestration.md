@@ -56,6 +56,7 @@ public class OrderSaga : SagaOrchestrator<OrderSagaState>
             })
             .CompensateWith<PaymentFailed>(async (evt, state, ctx) =>
             {
+                // Undo previous steps — run in reverse registration order.
                 await ctx.SendCommandAsync(new CancelPayment(state.OrderId, evt.Reason));
             })
             .ExpireAfter(TimeSpan.FromMinutes(30))
@@ -133,7 +134,7 @@ builder.ExpireAfter(TimeSpan.FromMinutes(30));
 builder.ExpireAt(timeProvider.GetUtcNow().AddDays(1));
 ```
 
-The `SagaTimeoutWorker` background service polls at `SagaOptions.TimeoutCheckInterval` (default: 30 seconds) for sagas whose `ExpiresAt` is in the past and `Status` is still `Active`.
+The `SagaTimeoutWorker` background service polls at `SagaOptions.TimeoutCheckInterval` (default: 30 seconds) for sagas whose `ExpiresAt` is in the past and `Status` is still `Active`. It then invokes the `OnTimeout` handler.
 
 ### Compensation
 
@@ -146,7 +147,9 @@ builder.CompensateWith<PaymentFailed>(async (evt, state, ctx) =>
 });
 ```
 
-When a compensation event arrives, the framework transitions the saga to `Compensating` and runs the handler. Compensation handlers run in **reverse registration order** — last registered, first executed.
+When a compensation event arrives, the framework transitions the saga to `Compensating` and runs the handler. Compensation handlers run in **reverse registration order** — last registered, first executed — so you can undo steps in the correct sequence.
+
+After compensation completes successfully, the saga transitions to `Completed`. On failure during compensation, it transitions to `Failed`.
 
 ## Saga status lifecycle
 
@@ -186,6 +189,22 @@ And register the EF Core store:
 services.AddOpinionatedEventingEntityFramework<AppDbContext>();
 ```
 
+## Full registration example
+
+```csharp
+// Add the saga engine
+services.AddOpinionatedEventingSagas(options =>
+{
+    options.TimeoutCheckInterval = TimeSpan.FromSeconds(30);
+});
+
+// Register each orchestrator
+services.AddSaga<OrderSaga>();
+
+// Register any choreography participants (see sagas-choreography.md)
+services.AddSagaParticipant<FulfillmentParticipant>();
+```
+
 ## Testing sagas
 
 Use `InMemorySagaStateStore` from `OpinionatedEventing.Testing` to test saga logic without a database:
@@ -193,6 +212,8 @@ Use `InMemorySagaStateStore` from `OpinionatedEventing.Testing` to test saga log
 ```csharp
 var store = new InMemorySagaStateStore();
 services.AddSingleton<ISagaStateStore>(store);
+
+// Publish the starting event and assert on store.States
 ```
 
 Use `FakeTimeProvider` to control the clock when testing timeout behaviour:

@@ -30,13 +30,15 @@ const config: Config = {
     locales: ['en'],
   },
 
+  plugins: ['./plugins/llms-txt.js'],
+
   presets: [
     [
       'classic',
       {
         docs: {
           sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/SierraNL/OpinionatedEventing/tree/main/docs/',
+          editUrl: 'https://github.com/SierraNL/opinionated-eventing-website/tree/main/',
         },
         blog: false,
         theme: {
@@ -47,7 +49,7 @@ const config: Config = {
   ],
 
   themeConfig: {
-    image: 'img/social-card.png',
+    image: 'img/logo.png',
     colorMode: {
       respectPrefersColorScheme: true,
     },
@@ -86,6 +88,7 @@ const config: Config = {
             {label: 'Commands vs Events', to: '/docs/commands-vs-events'},
             {label: 'Outbox Pattern', to: '/docs/outbox-pattern'},
             {label: 'Saga Orchestration', to: '/docs/sagas-orchestration'},
+            {label: 'Agent Guide (AI)', to: '/docs/ai/agent-guide'},
           ],
         },
         {
