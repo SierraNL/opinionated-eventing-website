@@ -81,7 +81,7 @@ function HeroBanner() {
         </div>
         <div className={styles.heroBadges}>
           <img alt="NuGet" src="https://img.shields.io/nuget/v/OpinionatedEventing?style=flat-square&label=nuget&color=7c3aed" />
-          <img alt=".NET" src="https://img.shields.io/badge/.NET-8%20%7C%209%20%7C%2010-7c3aed?style=flat-square" />
+          <img alt=".NET" src="https://img.shields.io/badge/.NET-10%20%7C%2011-7c3aed?style=flat-square" />
           <img alt="License" src="https://img.shields.io/github/license/SierraNL/OpinionatedEventing?style=flat-square&color=7c3aed" />
         </div>
       </div>
