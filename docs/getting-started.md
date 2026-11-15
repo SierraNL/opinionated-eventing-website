@@ -9,7 +9,7 @@ This guide walks you through installing OpinionatedEventing, picking a transport
 
 ## Prerequisites
 
-- .NET 8, 9, or 10
+- .NET 10 or 11
 - An Azure Service Bus namespace **or** a RabbitMQ broker (or run either locally via [Aspire](local-development.md))
 - Entity Framework Core (only required if the service **publishes** messages or uses sagas — receive-only services do not need it)
 
@@ -112,7 +112,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
-        modelBuilder.ApplyOutboxConfiguration(Database.ProviderName);    // outbox_messages table
+        modelBuilder.ApplyOutboxConfiguration(Database.ProviderName);   // outbox_messages table — pass ProviderName for correct SQLite DDL
         modelBuilder.ApplySagaStateConfiguration(Database.ProviderName); // saga_states table (if using sagas)
     }
 }
@@ -164,7 +164,7 @@ services.AddRabbitMQTransport(options =>
 });
 ```
 
-You only need one transport — swap them by changing the DI registration. No handler code changes required.
+You only need one transport — swap them by changing DI registration. No handler code changes required.
 
 ## 6. Publish your first event
 

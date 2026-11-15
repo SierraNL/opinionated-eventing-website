@@ -43,7 +43,7 @@ In `appsettings.json`:
 
 ## Distributed tracing
 
-The library uses `System.Diagnostics.ActivitySource`. Wire up spans via the OpenTelemetry SDK:
+The library uses `System.Diagnostics.ActivitySource`. All activity source names are under the `opinionatedeventing` prefix. Wire them up via the OpenTelemetry SDK:
 
 ```csharp
 using OpinionatedEventing.OpenTelemetry;
@@ -65,11 +65,13 @@ services.AddOpenTelemetry()
 
 Each span carries W3C trace context propagated through the message envelope so traces span service boundaries.
 
+### Viewing traces locally
+
 When using Aspire, the dashboard includes a built-in trace viewer. Traces from all services are aggregated automatically — no additional exporter configuration is needed for local development.
 
 ## Metrics
 
-Wire up the metrics provider:
+The library uses `System.Diagnostics.Metrics.Meter`. Wire up the metrics provider:
 
 ```csharp
 using OpinionatedEventing.OpenTelemetry;
@@ -104,12 +106,14 @@ services.AddOpenTelemetry()
 
 ## Health checks
 
+Health checks are the quickest way to surface observability in an operations dashboard:
+
 ```csharp
 services.AddHealthChecks()
     .AddOpinionatedEventingHealthChecks(options =>
     {
-        options.OutboxBacklogThreshold = 100;
-        options.SagaTimeoutBacklogThreshold = 10;
+        options.OutboxBacklogThreshold = 100;    // pending messages before Degraded
+        options.SagaTimeoutBacklogThreshold = 10; // expired sagas before Degraded
     });
 
 app.MapHealthChecks("/health");
@@ -117,26 +121,36 @@ app.MapHealthChecks("/health/live",  new HealthCheckOptions { Predicate = c => c
 app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = c => c.Tags.Contains("ready") });
 ```
 
+The built-in checks use two tags:
+
 | Tag | Checks |
 |---|---|
 | `live` | Broker connectivity |
 | `ready` | Outbox backlog, saga timeout backlog |
 
-To automatically pause consumers when a dependency becomes unavailable:
+Broker connectivity is a liveness check (`live`), not readiness: if the broker is unreachable the process is genuinely broken and a restart may help re-establish the connection. Backlog checks are readiness signals — a load balancer can stop routing HTTP traffic to the instance while the background workers drain the queue.
+
+**Readiness and broker consumers:** readiness probes only control the Kubernetes `Service` endpoint, which governs *HTTP* traffic. The broker consumer workers are `BackgroundService` instances that pull messages directly from the broker, independent of any load balancer. By default, a degraded readiness check does **not** pause event consumption.
+
+To automatically pause consumers when a dependency becomes unavailable, chain `WithConsumerPause()` and tag the relevant checks with `"pause"`:
 
 ```csharp
 services.AddHealthChecks()
     .AddOpinionatedEventingHealthChecks()
-    .AddNpgsql(connectionString, tags: ["pause"])
+    .AddNpgsql(connectionString, tags: ["pause"])   // pause consumers when DB is unreachable
     .WithConsumerPause();
 ```
 
+When any check tagged `"pause"` reports `Degraded` or `Unhealthy`, the consumer workers stop accepting new messages from the broker. They resume automatically once all `"pause"`-tagged checks recover to `Healthy`. This is opt-in — the default behaviour (always consuming) is preserved when `WithConsumerPause()` is not called.
+
+The built-in backlog checks (`"ready"`) intentionally do **not** carry the `"pause"` tag. Pausing consumers does not help drain the outbox or saga-timeout backlogs — those are drained by `OutboxDispatcherWorker` and `SagaTimeoutWorker`, which are never paused. Wiring backlog checks to consumer pause would cause oscillation: consumers pause → broker queue grows → backlogs eventually drain → consumers resume → new messages create more backlog → repeat.
+
 ## Correlation and causation IDs
 
-Every message carries two identifiers:
+Every message carries two identifiers that let you reconstruct the full causal chain across services:
 
-- **CorrelationId** — Set at the entry point and propagated through every event and command in the chain.
-- **CausationId** — The `Id` of the message that caused this one to be sent.
+- **CorrelationId** — Set at the entry point (e.g., an HTTP request ID) and propagated through every event and command in the chain. All spans and log entries include this.
+- **CausationId** — The `Id` of the message that caused this one to be sent. Null for root messages. This is how you reconstruct the parent-child relationship between messages.
 
 These IDs are accessible in handlers via `IMessagingContext`:
 
@@ -164,4 +178,4 @@ public class OrderNotificationHandler(IMessagingContext context) : IEventHandler
 }
 ```
 
-Any `ILogger<T>` used inside a handler automatically inherits these properties.
+Any `ILogger<T>` used inside a handler automatically inherits these properties — no manual logging required. Logging providers that support structured scopes (OpenTelemetry, Serilog, Application Insights) pick them up and include them on every log entry emitted during handler execution.

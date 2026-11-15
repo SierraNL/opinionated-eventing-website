@@ -14,6 +14,18 @@ const sidebars: SidebarsConfig = {
     'local-development',
     'observability',
     'idempotency',
+    {
+      type: 'category',
+      label: 'For AI agents',
+      items: [
+        'ai/agent-guide',
+        'ai/api-cheat-sheet',
+        'ai/packages',
+        'ai/recipes',
+        'ai/migration-mapping',
+        'ai/templates',
+      ],
+    },
   ],
 };
 

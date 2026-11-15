@@ -5,23 +5,33 @@ title: Idempotency
 
 # Idempotency and the Inbox Pattern
 
-The outbox pattern guarantees **at-least-once delivery**: every message written to the outbox will eventually reach the broker, but under certain failure conditions a message may be delivered more than once. Consumers must therefore be prepared to receive duplicates.
+The outbox pattern guarantees **at-least-once delivery**: every message written to the outbox will eventually reach the broker, but under certain failure conditions (process crash between dispatch and acknowledgement) a message may be delivered more than once. Consumers must therefore be prepared to receive duplicates.
+
+## Decision: no built-in inbox store
+
+OpinionatedEventing does **not** provide an `IInboxStore` abstraction (see [REQUIREMENTS.md § Non-Goals](https://github.com/SierraNL/OpinionatedEventing/blob/main/REQUIREMENTS.md#1-goals--non-goals)). This is a stated v1.0 scope decision, not a gap:
+
+- **A shared inbox store would introduce a mandatory persistence dependency** into every consuming service, even when the handler is naturally idempotent or the business risk of a duplicate is low.
+- **Deduplication only works if it commits in the same transaction as the handler's business logic** — otherwise there's a window where the "already processed" check and the side effect can disagree. `IOutboxStore` can own its own transaction because it's the only writer at that point; a dedup check has to share the *consumer's own* `DbContext` / unit-of-work, which makes a generic, reusable `IInboxStore` a materially harder abstraction to get right than the outbox was. Handing consumers the primitive (`IMessagingContext.MessageId`, below) and letting them dedupe inside their own transaction sidesteps that problem entirely.
+
+The patterns below — including using `IMessagingContext.MessageId` as a dedup key — cover the same ground an inbox store would. The decision is re-evaluated after gathering real-world usage data — see [Future versions](#future-versions).
 
 ## Why duplicates happen
 
-The `OutboxDispatcherWorker` marks a message as processed only after the broker confirms receipt. If the process crashes after the broker receives the message but before the confirmation is written to the database, the worker will re-dispatch the same row on the next poll cycle.
+The `OutboxDispatcherWorker` marks a message as processed only after the broker confirms receipt. If the process crashes or restarts after the broker receives the message but before the confirmation is written to the database, the worker will re-dispatch the same row on the next poll cycle. The broker receives the message twice, and both deliveries reach your handlers.
 
 ## Strategies for consumer-side idempotency
 
 ### 1. Natural idempotency
 
-The simplest case: the handler's effect is idempotent by construction. A handler that sets a flag or updates a value to a fixed state can safely run twice without harm.
+The simplest case: the handler's effect is idempotent by construction. A handler that sets a flag, updates a value to a fixed state, or performs a read-only side effect can safely run twice without harm. Prefer this approach where the domain allows it.
 
 ```csharp
 public class MarkOrderPaidHandler : IEventHandler<OrderPaid>
 {
     public async Task HandleAsync(OrderPaid @event, CancellationToken ct)
     {
+        // UPDATE ... SET Status = 'Paid' WHERE Id = @id
         // Running this twice is harmless — the row ends up in the same state.
         await _db.Orders
             .Where(o => o.Id == @event.OrderId)
@@ -32,7 +42,9 @@ public class MarkOrderPaidHandler : IEventHandler<OrderPaid>
 
 ### 2. Idempotency key check (manual inbox)
 
-Track processed message IDs in a database table. Before executing the handler's business logic, check whether the message ID has already been recorded. `IMessagingContext.MessageId` carries the inbound message's own ID:
+Track processed message IDs in a database table. Before executing the handler's business logic, check whether the message ID has already been recorded. If it has, skip the work. Record the ID and commit in the same transaction as the business operation.
+
+`IMessagingContext.MessageId` carries the inbound message's own ID — inject `IMessagingContext` into your handler and use it as the deduplication key:
 
 ```csharp
 public class SendWelcomeEmailHandler(IMessagingContext messagingContext, AppDbContext db, IEmailClient emailClient)
@@ -54,17 +66,17 @@ public class SendWelcomeEmailHandler(IMessagingContext messagingContext, AppDbCo
 }
 ```
 
-Prune the `ProcessedMessages` table periodically — rows older than your message retention window are safe to delete.
+Prune the `ProcessedMessages` table periodically — rows older than your message retention window (e.g. 7 days) are safe to delete.
 
 ### 3. Conditional insert / unique constraint
 
-Use a database unique constraint on the message ID column instead of an explicit `SELECT` before `INSERT`. This avoids the read entirely and lets the database enforce uniqueness:
+Use a database unique constraint on the message ID column instead of an explicit `SELECT` before `INSERT`. This avoids the read entirely and lets the database enforce uniqueness. Use `IMessagingContext.MessageId` as the deduplication key (same as strategy 2).
 
 ```sql
 CREATE UNIQUE INDEX ux_processed_messages_id ON processed_messages (message_id);
 ```
 
-Catch the resulting `DbUpdateException` and treat it as "already processed":
+Catch the resulting `DbUpdateException` / unique-constraint violation and treat it as "already processed". The exact inner-exception type is provider-specific (SQL Server throws `SqlException`, PostgreSQL throws `NpgsqlException`), so check the message text or use a provider helper:
 
 ```csharp
 try
@@ -84,7 +96,7 @@ await DoWorkAsync(@event, ct);
 
 ### 4. Idempotent external calls
 
-When the side effect is a call to an external API, pass the message ID as the idempotency key if the API supports it:
+When the side effect is a call to an external API, pass the message ID as the idempotency key if the API supports it (most payment, email, and notification APIs do). Inject `IMessagingContext` into your handler to access `MessageId`:
 
 ```csharp
 await _paymentGateway.ChargeAsync(new ChargeRequest
@@ -94,6 +106,8 @@ await _paymentGateway.ChargeAsync(new ChargeRequest
     Currency = @event.Currency,
 });
 ```
+
+The API will return the original response for any duplicate call with the same key, and your handler exits cleanly.
 
 ## Which strategy to use
 
@@ -106,4 +120,4 @@ await _paymentGateway.ChargeAsync(new ChargeRequest
 
 ## Future versions
 
-An `IInboxStore` abstraction (modelled after `IOutboxStore`) with an EF Core implementation is a candidate for a future release.
+An `IInboxStore` abstraction (modelled after `IOutboxStore`) with an EF Core implementation is a candidate for a future release. If you need it now, the patterns above cover the same ground with code you control.

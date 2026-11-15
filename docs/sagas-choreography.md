@@ -50,6 +50,7 @@ public class FulfillmentParticipant : ISagaParticipant<PaymentReceived>
         ISagaContext ctx,
         CancellationToken cancellationToken)
     {
+        // Reserve stock in response to a payment being received.
         var result = await _inventory.TryReserveAsync(@event.Sku, @event.Quantity, cancellationToken);
 
         if (result.Success)
@@ -75,7 +76,7 @@ services.AddOpinionatedEventingSagas();
 services.AddSagaParticipant<FulfillmentParticipant>();
 ```
 
-`AddSagaParticipant<T>` scans the `ISagaParticipant<TEvent>` interface, extracts the event type, registers the correct `IEventHandler<TEvent>` subscription automatically, and wires it to the saga dispatcher.
+`AddSagaParticipant<T>` scans the `ISagaParticipant<TEvent>` interface, extracts the event type, registers the correct `IEventHandler<TEvent>` subscription automatically, and wires it to the saga dispatcher. The participant is resolved from DI per message — constructor injection works normally.
 
 ## ISagaContext in choreography
 
@@ -96,7 +97,7 @@ public interface ISagaContext
 }
 ```
 
-All messages sent through `ISagaContext` go through the outbox.
+All messages sent through `ISagaContext` go through the outbox. If the handler throws, none of them are dispatched.
 
 ## Choreography vs orchestration: a comparison
 
@@ -111,13 +112,13 @@ OrderPlaced
 
 With orchestration an `OrderSaga` drives every step and persists state between them. With choreography each service reacts in isolation — there is no saga state table and no coordinator.
 
-The choreography version is simpler to write and deploy, but harder to debug across services because there is no single place that holds the full picture of where a workflow stands.
+The choreography version is simpler to write and deploy, but harder to debug across services because there is no single place that holds the full picture of "where is this order in the flow?"
 
 **Rule of thumb:** start with choreography. Introduce orchestration when you need compensation, timeout, or a single audit trail.
 
 ## Testing participants
 
-Use `FakeSagaContext` from `OpinionatedEventing.Testing` to assert on sent commands and published events without any broker interaction:
+`ISagaParticipant<TEvent>.HandleAsync` receives an `ISagaContext`. Use `FakeSagaContext` from `OpinionatedEventing.Testing` to assert on sent commands and published events without any broker interaction:
 
 ```csharp
 using OpinionatedEventing.Testing;
@@ -131,5 +132,7 @@ await participant.HandleAsync(
     CancellationToken.None);
 
 Assert.Single(ctx.PublishedEvents.OfType<StockReserved>());
-Assert.False(ctx.IsCompleted);
+Assert.False(ctx.IsCompleted); // Complete() was not called
 ```
+
+`FakeSagaContext` captures commands and events in `SentCommands` and `PublishedEvents` (both `IReadOnlyList<object>`). Use `.OfType<T>()` to filter by type, consistent with `FakePublisher`.
